@@ -80,6 +80,59 @@ print(one_hot.shape, charges.shape, positions.shape, node_mask.shape)
 
 The snippet mirrors the logic in `eval_sample.py`: it restores the configuration, reconstructs the model and data utilities, and then uses `qm9.sampling.sample` to draw molecules. Replace `model_dir` with the path to your own experiment when working with different checkpoints.
 
+### `qm9.model_module` helper utilities
+
+For higher-level workflows you can rely on the convenience wrappers bundled in [`qm9/model_module.py`](qm9/model_module.py). The module re-exports helpers to load checkpoints, encode/decode molecules and run latent diffusion sampling without having to piece the pieces together manually. A minimal session looks as follows:
+
+```python
+import pickle
+from pathlib import Path
+
+import torch
+
+from configs.datasets_config import get_dataset_info
+from qm9 import dataset, model_module
+
+model_dir = Path("outputs/geoldm_qm9")
+
+with model_dir.joinpath("args.pickle").open("rb") as f:
+    train_args = pickle.load(f)
+
+dataset_info = get_dataset_info(train_args.dataset, train_args.remove_h)
+dataloaders, _ = dataset.retrieve_dataloaders(train_args)
+
+ldm, nodes_dist, _ = model_module.load_model(
+    stage="latent_diffusion",
+    args=train_args,
+    dataset_info=dataset_info,
+    dataloader_train=dataloaders["train"],
+    checkpoint_path=model_dir,
+)
+
+batch = next(iter(dataloaders["train"]))
+device = next(ldm.parameters()).device
+
+x = batch["positions"].to(device)
+h = {
+    "categorical": batch["one_hot"].to(device),
+    "integer": batch["charges"].to(device),
+}
+node_mask = batch["atom_mask"].unsqueeze(-1).to(device)
+edge_mask = batch["edge_mask"].to(device)
+
+latents = model_module.encode(ldm, x, h, node_mask=node_mask, edge_mask=edge_mask)
+recon_positions, recon_features = model_module.decode(
+    ldm, latents[0], node_mask=node_mask, edge_mask=edge_mask
+)
+
+conformer = model_module.smiles_to_3d("CCO")[0]
+smiles, _ = model_module.structure_to_smiles(
+    conformer["atom_symbols"], conformer["coordinates"]
+)
+```
+
+`load_model` reconstructs the requested stage (diffusion, autoencoder or latent diffusion) and automatically locates the EMA weights saved by the training scripts. The combination of `encode`/`decode` lets you round-trip batches from the dataloader, while `smiles_to_3d` and `structure_to_smiles` bridge between string and 3D representations. `run_diffusion` exposes the raw sampling loop used internally by `qm9.sampling.sample`—refer to that helper for an end-to-end example that prepares the required node/edge masks.
+
 
 ## Train the GeoLDM
 
