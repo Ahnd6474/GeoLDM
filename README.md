@@ -16,6 +16,70 @@ Install the required packages from `requirements.txt`. A simplified version of t
 **Note**: If you want to set up a rdkit environment, it may be easiest to install conda and run:
 ``conda create -c conda-forge -n my-rdkit-env rdkit`` and then install the other required packages. But the code should still run without rdkit installed though.
 
+## Usage
+
+The repository is organized around training scripts (`main_qm9.py`, `main_geom_drugs.py`), evaluation utilities (for example `eval_sample.py` and `eval_analyze.py`), and helper modules in the `qm9/` and `equivariant_diffusion/` packages. Typical workflows involve the following steps:
+
+1. **Prepare the environment** by installing the dependencies listed above.
+2. **Download the dataset** (for Drugs, follow the extra steps under `data/geom/README.md`).
+3. **Train or download** a pretrained GeoLDM checkpoint (see the sections below).
+4. **Run the evaluation utilities** or load the checkpoint programmatically in Python for custom experiments.
+
+### Command line quickstart
+
+Once you have placed a pretrained model in `outputs/$exp_name` (or finished training one), you can analyze or visualize generated molecules with:
+
+```bash
+python eval_analyze.py --model_path outputs/$exp_name --n_samples 10_000
+python eval_sample.py --model_path outputs/$exp_name --n_samples 10_000
+```
+
+Both commands will read the stored training configuration from `outputs/$exp_name/args.pickle`, rebuild the latent diffusion model, and write results to `outputs/$exp_name/eval/`.
+
+### Python API example
+
+You can also access the latent diffusion model directly from Python to integrate GeoLDM into custom pipelines. The following example loads a pretrained QM9 checkpoint, draws a batch of molecules, and prints their shapes:
+
+```python
+import pickle
+from os.path import join
+
+import torch
+
+from configs.datasets_config import get_dataset_info
+from qm9 import dataset
+from qm9.models import get_latent_diffusion
+from qm9.sampling import sample
+
+model_dir = "outputs/geoldm_qm9"  # folder containing args.pickle and weights
+
+with open(join(model_dir, "args.pickle"), "rb") as f:
+    train_args = pickle.load(f)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+train_args.device = device
+train_args.cuda = device.type == "cuda"
+
+dataset_info = get_dataset_info(train_args.dataset, train_args.remove_h)
+dataloaders, _ = dataset.retrieve_dataloaders(train_args)
+
+ldm, nodes_dist, _ = get_latent_diffusion(
+    train_args, device, dataset_info, dataloaders["train"],
+)
+
+weights = torch.load(join(model_dir, "generative_model_ema.npy"), map_location=device)
+ldm.load_state_dict(weights)
+ldm.eval()
+
+one_hot, charges, positions, node_mask = sample(
+    train_args, device, ldm, dataset_info, nodesxsample=nodes_dist.sample(4)
+)
+
+print(one_hot.shape, charges.shape, positions.shape, node_mask.shape)
+```
+
+The snippet mirrors the logic in `eval_sample.py`: it restores the configuration, reconstructs the model and data utilities, and then uses `qm9.sampling.sample` to draw molecules. Replace `model_dir` with the path to your own experiment when working with different checkpoints.
+
 
 ## Train the GeoLDM
 
